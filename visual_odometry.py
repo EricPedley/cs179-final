@@ -16,6 +16,7 @@ import gtsam
 from gtsam import symbol_shorthand
 
 from pyLSHash import LSHash # https://github.com/guofei9987/pyLSHash/tree/main
+from data_reading import read_images, load_reference_poses, read_imu, sync_data, SyncedDatum
 
 X = symbol_shorthand.X
 L = symbol_shorthand.L
@@ -149,6 +150,7 @@ def compute_relative_pose(E, points0, points1) -> tuple[np.ndarray, Rotation]:
     return pose_t, pose_r
 
 measurement_noise = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)  # one pixel in u and v
+gtsam_K = gtsam.Cal3_S2(K[0,0], K[1,1], 0.0, K[0,2], K[1,2])
 
 def add_vo_factors(
     g: gtsam.NonlinearFactorGraph,
@@ -182,33 +184,36 @@ def add_vo_factors(
 
     # 2:
     cam0_pose = initial_values.atPose3(X(pose_variable_indices[0]))
+    cam1_pose = gtsam.Pose3(gtsam.Rot3(r.as_matrix()), t=t.reshape((3,1))) * cam0_pose
+    initial_values.insert(X(pose_variable_indices[1]), cam1_pose)
 
     # 3
-    for p0, p1, d in zip(points0, points1, descriptors):
+    for p0, p1, d in zip(points0.astype(np.float64), points1.astype(np.float64), descriptors):
         matches = keypoint_data.query(d.tolist())
         # 4
         if len(matches)==0: # keypoint does not exist in map
-            index = len()
+            index = len(keypoint_data.storage_instance.keys())
             # add (d, index) to hash table
-            landmark = L(index)
-            g.push_back(GenericProjectionFactorCal3_S2(p0, measurement_noise, X(pose_variable_indices[0]), L(index)))
-            g.push_back(GenericProjectionFactorCal3_S2(p1, measurement_noise, X(pose_variable_indices[1]), L(index)))
+            g.push_back(gtsam.GenericProjectionFactorCal3_S2(p0.reshape((2,1)), measurement_noise, X(pose_variable_indices[0]), L(index), gtsam_K))
+            g.push_back(gtsam.GenericProjectionFactorCal3_S2(p1.reshape((2,1)), measurement_noise, X(pose_variable_indices[1]), L(index), gtsam_K))
+            # triangulate and add to initial values
+            proj_mat_0 = np.concatenate((K, cam0_pose.matrix()[:3, 3].reshape((3,1))), axis=1)
+            proj_mat_0[:3,:3] = proj_mat_0[:3,:3] @ cam0_pose.matrix()[:3,:3]
+            proj_mat_1 = np.concatenate((K, cam1_pose.matrix()[:3, 3].reshape((3,1))), axis=1)
+            proj_mat_1[:3,:3] = proj_mat_1[:3,:3] @ cam1_pose.matrix()[:3,:3]
+
+            points_3d_homogenous = cv2.triangulatePoints(proj_mat_0, proj_mat_1, p0.reshape((2,1)), p1.reshape((2,1)))
+
+            points_3d = points_3d_homogenous[:3,0] / points_3d_homogenous[3,0]  # convert from homogeneous coordinates
+            initial_values.insert(L(index), gtsam.Point3(points_3d[0], points_3d[1], points_3d[2]))
+            keypoint_data.index(d.cpu().detach().numpy(), extra_data = index)
         # 5
         else: # get closest match and work with it
             index = matches[0][0][1]
-            landmark = L(index)
-            g.push_back(GenericProjectionFactorCal3_S2(p0, measurement_noise, X(pose_variable_indices[0]), L(index)))
-            g.push_back(GenericProjectionFactorCal3_S2(p1, measurement_noise, X(pose_variable_indices[1]), L(index)))
-
-            point_cloud_hash.index(feature, extra_data = len(point_cloud))
+            g.push_back(gtsam.GenericProjectionFactorCal3_S2(p0.reshape((2,1)), measurement_noise, X(pose_variable_indices[0]), L(index), gtsam_K))
+            g.push_back(gtsam.GenericProjectionFactorCal3_S2(p1.reshape((2,1)), measurement_noise, X(pose_variable_indices[1]), L(index), gtsam_K))
 
 if __name__ == '__main__':
-
-    from data_reading import read_images, load_reference_poses, read_imu, sync_data
-    from visualization import visualize_trajectory
-    from visual_odometry import compute_relative_pose, compute_matches, add_vo_factors
-    from imu_preintegration import add_imu_factors
-
     imgs = read_images()
     imu = read_imu()
     gt_poses = load_reference_poses()
@@ -219,11 +224,12 @@ if __name__ == '__main__':
         imgs_list.append(img)
     synced_data = sync_data(imu, imgs_list, gt_poses)
     initial_values = gtsam.Values()
-    g = NonlinearFactorGraph()
+    g = gtsam.NonlinearFactorGraph()
     keypoint_data = LSHash(
         hash_size=32,
-        input_dim=128 if USE_SIFT else 32,
+        input_dim=256,
         num_hashtables=1,
     )
-    g.push_back()
+    initial_values.insert(X(0), gtsam.Pose3())
     add_vo_factors(g, synced_data[0], initial_values, (0,1), keypoint_data)
+    add_vo_factors(g, synced_data[1], initial_values, (1,2), keypoint_data)
