@@ -1,3 +1,4 @@
+from typing import NamedTuple
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
@@ -51,7 +52,18 @@ def read_images() -> list[tuple[float, np.ndarray, np.ndarray]]:
             continue
         yield (timestamp, img_left, img_right)
 
-def sync_data(imu_data: np.ndarray, images: list[tuple[int, np.ndarray, np.ndarray]], gt_poses: list[tuple[float,np.ndarray, Rotation]]):
+class SyncedDatum(NamedTuple):
+    start_time: float
+    end_time: float
+    imu_data: np.ndarray  # 2D array with columns: timestamp, gx, gy, gz, ax, ay, az
+    img_left_start: np.ndarray
+    img_right_start: np.ndarray
+    img_left_end: np.ndarray
+    img_right_end: np.ndarray
+    gt_pose_start: tuple[np.ndarray, Rotation]
+    gt_pose_end: tuple[np.ndarray, Rotation]
+
+def sync_data(imu_data: np.ndarray, images: list[tuple[int, np.ndarray, np.ndarray]], gt_poses: list[tuple[float,np.ndarray, Rotation]]) -> list[SyncedDatum]:
     '''
     Collapses the data into intervals between image timestamps.
     Returns a list of tuples (
@@ -112,7 +124,7 @@ def sync_data(imu_data: np.ndarray, images: list[tuple[int, np.ndarray, np.ndarr
             print(f"Warning: Missing ground truth pose for interval {start_time} to {end_time}. Skipping this interval.")
             continue
 
-        synced_data.append((
+        synced_data.append(SyncedDatum(
             start_time,
             end_time,
             imu_segment,
@@ -120,7 +132,7 @@ def sync_data(imu_data: np.ndarray, images: list[tuple[int, np.ndarray, np.ndarr
             img_right_start,
             img_left_end,
             img_right_end,
-            gt_pose_start[1:],
-            gt_pose_end[1:],
+            gt_pose_start,
+            gt_pose_end,
         ))
     return synced_data
