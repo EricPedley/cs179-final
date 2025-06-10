@@ -138,3 +138,10 @@ def compute_relative_pose(E, points0, points1) -> tuple[np.ndarray, Rotation]:
     tvec = t.flatten()
     pose_t, pose_r = cv_to_pose(rvec, tvec)
     return pose_t, pose_r
+
+def add_vo_factors(
+    g,
+    data: SyncedDatum,
+    variables: tuple[str,str],
+    keypoint_data
+)
