@@ -97,8 +97,26 @@ config.final_optimization = pysuperansac.LocalOptimizationType.IteratedLSQ
 config.neighborhood_settings.neighborhood_grid_density = 6
 config.neighborhood_settings.neighborhood_size = 6
 
+def draw_matches(kps1, kps2, tentatives, img1, img2, mask, subsample_size=None):
+    matchesMask = mask#.ravel().tolist()
+    # Subsample the matches if needed by modifying the mask
+    if subsample_size is None or subsample_size > len(matchesMask):
+        subsample_size = len(matchesMask)
+    indices_in_mask = np.arange(len(matchesMask))[matchesMask.astype(bool)]
+    sampled_indices = indices_in_mask[np.random.choice(indices_in_mask, subsample_size)]
+    matchesMask = np.zeros_like(matchesMask)
+    matchesMask[sampled_indices] = 1
 
-# TODO: refactor out the matching+RANSAC into a separate function that returns the matches with their descriptors
+        
+    draw_params = dict(#matchColor = (255,255,0), # draw matches in yellow color
+                   singlePointColor = None,
+                   matchesMask = matchesMask, # draw only inliers
+                   flags = 2)
+    img_out = cv2.drawMatches(img1,kps1,img2,kps2,tentatives,None,**draw_params)
+    cv2.imwrite('matches.png', img_out)
+    return
+
+
 def compute_matches(img1, img2) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     '''
     Returns the matches from doing RANSAC on 
@@ -118,6 +136,13 @@ def compute_matches(img1, img2) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.
     points1 = feats1['keypoints'][matches[..., 1]]  # coordinates in image #1, shape (K,2)py(img2).permute(2, 0, 1).float().unsqueeze(0).to(device) / 255.
     splg_matches = np.concatenate([points0.cpu().detach().numpy(), points1.cpu().detach().numpy()], axis=1), matches01["scores"].cpu().detach().numpy()
 
+    # # visualize and save to a file
+    # draw_matches([cv2.KeyPoint(splg_matches[0][i][0], splg_matches[0][i][1], 1) for i in range(splg_matches[0].shape[0])], 
+    #          [cv2.KeyPoint(splg_matches[0][i][2], splg_matches[0][i][3], 1) for i in range(splg_matches[0].shape[0])], 
+    #          [cv2.DMatch(i, i, 1) for i in range(splg_matches[0].shape[0])], 
+    #          img1, img2, 
+    #          np.array(splg_matches[0].shape[0] * [1]), subsample_size=100)
+
     # Order by the score
     splg_matches = splg_matches[0][np.argsort(splg_matches[1])[::-1]], np.sort(splg_matches[1])[::-1]
 
@@ -131,7 +156,7 @@ def compute_matches(img1, img2) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.
 
     mask = np.zeros((splg_matches[0].shape[0], 1), dtype=np.uint8)
     mask[inliers] = 1
-    print(len(inliers), "inliers found out of", splg_matches[0].shape[0], "matches")
+    # print(len(inliers), "inliers found out of", splg_matches[0].shape[0], "matches")
     
     points0 = splg_matches[0][inliers, :2]
     points1 = splg_matches[0][inliers, 2:]
