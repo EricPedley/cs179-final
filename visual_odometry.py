@@ -206,7 +206,8 @@ def add_vo_factors(
     initial_values: gtsam.Values,
     pose_variable_indices: tuple[int,int],
     keypoint_data: LSHash,
-    first=False
+    first=False,
+    insert_initial_pose_values=True
 ):
     '''
     1: compute keypoints matches and relative pose between images
@@ -237,7 +238,8 @@ def add_vo_factors(
     camL_start_pose = initial_values.atPose3(X(pose_variable_indices[0]))
     camL_end_pose = camL_start_pose * gtsam.Pose3(gtsam.Rot3(vo_r.as_matrix()), t=vo_t.reshape((3,1)))
     camR_start_pose = cam0_to_cam1.compose(camL_start_pose)
-    initial_values.insert(X(pose_variable_indices[1]), camL_end_pose)
+    if insert_initial_pose_values:
+        initial_values.insert(X(pose_variable_indices[1]), camL_end_pose)
     initial_values.insert(Y(pose_variable_indices[1]), camL_end_pose.compose(cam0_to_cam1))
     # add BetweenFactor
     g.push_back(gtsam.BetweenFactorPose3(
@@ -245,6 +247,12 @@ def add_vo_factors(
         Y(pose_variable_indices[1]),
         cam0_to_cam1,
         gtsam.noiseModel.Isotropic.Sigma(6, 1e-6)  # 6DOF: very small noise
+    ))
+    g.push_back(gtsam.BetweenFactorPose3(
+        X(pose_variable_indices[0]),
+        X(pose_variable_indices[1]),
+        camL_start_pose.between(camL_end_pose),
+        gtsam.noiseModel.Isotropic.Sigma(6, 1)  # 6DOF: larger noise than the baseline factor
     ))
 
     # 3
