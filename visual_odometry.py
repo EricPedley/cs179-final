@@ -229,9 +229,9 @@ def add_vo_factors(
 
     # 1:
     vo_points0, vo_points1, vo_descriptors, vo_E = compute_matches(data.img_left_start, data.img_left_end)
-    # vo_t, vo_r = compute_relative_pose(vo_E, vo_points0, vo_points1)
-    vo_t = np.zeros(3)
-    vo_r = Rotation.identity()
+    vo_t, vo_r = compute_relative_pose(vo_E, vo_points0, vo_points1)
+    # vo_t = np.zeros(3)
+    # vo_r = Rotation.identity()
 
     # 2:
     camL_start_pose = initial_values.atPose3(X(pose_variable_indices[0]))
