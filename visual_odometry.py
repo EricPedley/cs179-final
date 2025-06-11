@@ -18,37 +18,6 @@ from gtsam import symbol_shorthand
 from pyLSHash import LSHash # https://github.com/guofei9987/pyLSHash/tree/main
 from data_reading import read_images, load_reference_poses, read_imu, sync_data, SyncedDatum
 
-def print_factor_errors(graph, values, top_n=10):
-    """Print factor errors sorted by magnitude"""
-    
-    factor_errors = []
-    
-    # Compute error for each factor
-    for i in range(graph.size()):
-        factor = graph.at(i)
-        try:
-            error = factor.error(values)
-            factor_errors.append((i, error, factor))
-        except Exception as e:
-            print(f"Could not compute error for factor {i}: {e}")
-            factor_errors.append((i, float('inf'), factor))
-    
-    # Sort by error (descending)
-    factor_errors.sort(key=lambda x: x[1], reverse=True)
-    
-    # Print top errors
-    print(f"Top {min(top_n, len(factor_errors))} factor errors:")
-    print("-" * 60)
-    
-    for rank, (factor_idx, error, factor) in enumerate(factor_errors[:top_n]):
-        factor_type = type(factor).__name__
-        keys = factor.keys()
-        print(f"{rank+1:2d}. Factor {factor_idx:3d} ({factor_type})")
-        print(f"    Error: {error:.6f}")
-        print(f"    Keys:  {[gtsam.DefaultKeyFormatter(key) for key in keys]}")
-        print()
-    
-    return factor_errors
 
 X = symbol_shorthand.X
 Y = symbol_shorthand.Y
@@ -188,6 +157,49 @@ gtsam_K = gtsam.Cal3_S2(K[0,0], K[1,1], 0.0, K[0,2], K[1,2])
 
 cam0_to_cam1 = gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(-0.3004961618953472, 0, 0))
 
+def print_factor_errors(graph, values, top_n=10):
+    """Print factor errors sorted by magnitude"""
+    
+    factor_errors = []
+    
+    # Compute error for each factor
+    for i in range(graph.size()):
+        factor = graph.at(i)
+        try:
+            error = factor.error(values)
+            factor_errors.append((i, error, factor))
+        except Exception as e:
+            print(f"Could not compute error for factor {i}: {e}")
+            factor_errors.append((i, float('inf'), factor))
+    
+    # Sort by error (descending)
+    factor_errors.sort(key=lambda x: x[1], reverse=True)
+    
+    # Print top errors
+    print(f"Top {min(top_n, len(factor_errors))} factor errors:")
+    print("-" * 60)
+    
+    for rank, (factor_idx, error, factor) in enumerate(factor_errors[:top_n]):
+        factor_type = type(factor).__name__
+        keys = factor.keys()
+        print(f"{rank+1:2d}. Factor {factor_idx:3d} ({factor_type})")
+        print(f"    Error: {error:.6f}")
+        print(f"    Keys:  {[gtsam.DefaultKeyFormatter(key) for key in keys]}")
+        # print expected measurement for calibration factors
+        if isinstance(factor, gtsam.GenericProjectionFactorCal3_S2):
+            expected_measurement = factor.measured()
+            actual_measurement = factor.whitenedError(values) + expected_measurement
+            computed_err = np.linalg.norm(actual_measurement - expected_measurement)
+            print(f"    Expected Measurement: {expected_measurement}")
+            # print actual measurement
+            # print(f"    Actual Measurement: {factor.whitenedError(values.atPose3(keys[0]), values.atPoint3(keys[1]), gtsam_K) + expected_measurement}")
+            print(f"    Actual Measurement: {factor.whitenedError(values) + expected_measurement}")
+            # This print was here to debug if my calculations actually match what gtsam calculates as the error
+            # print(f"    Computed Error: {computed_err**2/2:.6f}")
+        print()
+    
+    return factor_errors
+
 def add_vo_factors(
     g: gtsam.NonlinearFactorGraph,
     data: SyncedDatum,
@@ -244,16 +256,13 @@ def add_vo_factors(
             if len(matches)==0: # keypoint does not exist in map
                 index = len(keypoint_data.storage_instance.keys())
                 # add (d, index) to hash table
-                g.push_back(gtsam.GenericProjectionFactorCal3_S2(p0.reshape((2,1)), measurement_noise, X(pose_variable_indices[img_index]), L(index), gtsam_K))
-                # insert right camera pose
-                g.push_back(gtsam.GenericProjectionFactorCal3_S2(p1.reshape((2,1)), measurement_noise, Y(pose_variable_indices[img_index]), L(index), gtsam_K))
                 # triangulate and add to initial values
                 camL_pose = camL_start_pose if img_index == 0 else camL_end_pose
-                camR_pose = camR_start_pose if img_index == 0 else camL_end_pose.compose(cam0_to_cam1)
+                camR_pose = camR_start_pose if img_index == 0 else cam0_to_cam1.compose(camL_end_pose)
                 R0 = camL_pose.matrix()[:3,:3]
                 R1 = camR_pose.matrix()[:3,:3]
-                proj_mat_0 = K @ np.concatenate((R0, camL_pose.matrix()[:3, 3].reshape((3,1))), axis=1)
-                proj_mat_1 = K @ np.concatenate((R1, camR_pose.matrix()[:3, 3].reshape((3,1))), axis=1)
+                proj_mat_0 = K @ np.concatenate((R0, R0@camL_pose.translation().reshape((3,1))), axis=1)
+                proj_mat_1 = K @ np.concatenate((R1, R1@camR_pose.translation().reshape((3,1))), axis=1)
 
                 points_3d_homogenous = cv2.triangulatePoints(proj_mat_0, proj_mat_1, p0.reshape((2,1)), p1.reshape((2,1)))
                 points_3d = points_3d_homogenous[:3,0] / points_3d_homogenous[3,0]  # convert from homogeneous coordinates
@@ -275,8 +284,15 @@ def add_vo_factors(
                 # assert np.linalg.norm(p0_proj - p0) < 1, f"Projection error for camera 0: {np.linalg.norm(p0_proj - p0)}"
                 # assert np.linalg.norm(p1_proj - p1) < 1, f"Projection error for camera 1: {np.linalg.norm(p1_proj - p1)}"
                 if np.dot(points_3d - camL_pose.translation().flatten(), camL_pose.rotation().matrix()[:,2]) < 0:
-                    points_3d = -points_3d  # flip the point if it is behind the camera
+                    continue # TODO: figure out how to handle this case
 
+                if np.linalg.norm(points_3d - camL_pose.translation().flatten()) > 20:
+                    # print("Warning: triangulated point is too far from camera, skipping")
+                    continue
+
+                g.push_back(gtsam.GenericProjectionFactorCal3_S2(p0.reshape((2,1)), measurement_noise, X(pose_variable_indices[img_index]), L(index), gtsam_K))
+                # insert right camera pose
+                g.push_back(gtsam.GenericProjectionFactorCal3_S2(p1.reshape((2,1)), measurement_noise, Y(pose_variable_indices[img_index]), L(index), gtsam_K))
                 initial_values.insert(L(index), gtsam.Point3(points_3d[0], points_3d[1], points_3d[2]))
                 keypoint_data.index(d.cpu().detach().numpy(), extra_data = index)
             # 5
@@ -294,7 +310,7 @@ if __name__ == '__main__':
     gt_poses = load_reference_poses()
     imgs_list = []
     for i, img in enumerate(imgs):
-        if i>1000:
+        if i>10:
             break
         imgs_list.append(img)
     synced_data = sync_data(imu, imgs_list, gt_poses)
@@ -310,14 +326,13 @@ if __name__ == '__main__':
     initial_values.insert(X(0), initial_pose_ground_truth)
     initial_values.insert(Y(0), initial_pose_ground_truth.compose(cam0_to_cam1))
     add_vo_factors(g, synced_data[0], initial_values, (0,1), keypoint_data, first=True)
-    # add_vo_factors(g, synced_data[1], initial_values, (1,2), keypoint_data)
+    add_vo_factors(g, synced_data[1], initial_values, (1,2), keypoint_data)
     g.push_back(gtsam.PriorFactorPose3(X(0), initial_pose_ground_truth, gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
-    # g.push_back(gtsam.PriorFactorPose3(X(0), gtsam.Pose3(), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
 
     # "cheat" a little bit to make the system not underconstrained
     g.push_back(gtsam.PriorFactorPose3(X(1), gtsam.Pose3(gtsam.Rot3(synced_data[1].gt_pose_start[1].as_matrix()), synced_data[1].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
     # In theory we shouldn't need this prior to make the system not underconstrained
-    # g.push_back(gtsam.PriorFactorPose3(X(2), gtsam.Pose3(gtsam.Rot3(synced_data[2].gt_pose_start[1].as_matrix()), synced_data[2].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
+    g.push_back(gtsam.PriorFactorPose3(X(2), gtsam.Pose3(gtsam.Rot3(synced_data[2].gt_pose_start[1].as_matrix()), synced_data[2].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
     g.print("Factor Graph:\n")
     initial_values.print("Initial Values:\n")
     print("initial error = {}".format(g.error(initial_values)))
@@ -330,3 +345,4 @@ if __name__ == '__main__':
     result = optimizer.optimize()
     result.print("Final results:\n")
     print("final error = {}".format(g.error(result)))
+    print_factor_errors(g, result, top_n=20)
