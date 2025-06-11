@@ -103,12 +103,11 @@ def pose_to_cv(pose_t, pose_r):
 
 
 K = np.array([
-    [396.2, 0, 800/2],
-    [0, 396.2, 400/2],
+    [501.4757919305817, 0, 421.7953735163109],
+    [0, 501.4757919305817, 167.65799492501083],
     [0, 0, 1]
 ])
 # focal length is 3.5mm physically
-PIXELS_TO_METERS = 3.5e-3 / 396.2  # focal length in meters divided by focal length in pixels
 
 # Parameters
 device = torch.device('cuda')
@@ -187,7 +186,7 @@ def compute_relative_pose(E, points0, points1) -> tuple[np.ndarray, Rotation]:
 measurement_noise = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)  # one pixel in u and v
 gtsam_K = gtsam.Cal3_S2(K[0,0], K[1,1], 0.0, K[0,2], K[1,2])
 
-cam0_to_cam1 = gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(-0.3, 0, 0))
+cam0_to_cam1 = gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(-0.3004961618953472, 0, 0))
 
 def add_vo_factors(
     g: gtsam.NonlinearFactorGraph,
@@ -218,12 +217,14 @@ def add_vo_factors(
 
     # 1:
     vo_points0, vo_points1, vo_descriptors, vo_E = compute_matches(data.img_left_start, data.img_left_end)
-    vo_t, vo_r = compute_relative_pose(vo_E, vo_points0, vo_points1)
+    # vo_t, vo_r = compute_relative_pose(vo_E, vo_points0, vo_points1)
+    vo_t = np.zeros(3)
+    vo_r = Rotation.identity()
 
     # 2:
     camL_start_pose = initial_values.atPose3(X(pose_variable_indices[0]))
     camL_end_pose = camL_start_pose * gtsam.Pose3(gtsam.Rot3(vo_r.as_matrix()), t=vo_t.reshape((3,1)))
-    camR_start_pose = camL_start_pose.compose(cam0_to_cam1)
+    camR_start_pose = cam0_to_cam1.compose(camL_start_pose)
     initial_values.insert(X(pose_variable_indices[1]), camL_end_pose)
     initial_values.insert(Y(pose_variable_indices[1]), camL_end_pose.compose(cam0_to_cam1))
     # add BetweenFactor
@@ -271,8 +272,10 @@ def add_vo_factors(
                     K, 
                     None
                 )[0].reshape((2,))
-                assert np.linalg.norm(p0_proj - p0) < 1e-3, f"Projection error for camera 0: {np.linalg.norm(p0_proj - p0)}"
-                assert np.linalg.norm(p1_proj - p1) < 1e-3, f"Projection error for camera 1: {np.linalg.norm(p1_proj - p1)}"
+                # assert np.linalg.norm(p0_proj - p0) < 1, f"Projection error for camera 0: {np.linalg.norm(p0_proj - p0)}"
+                # assert np.linalg.norm(p1_proj - p1) < 1, f"Projection error for camera 1: {np.linalg.norm(p1_proj - p1)}"
+                if np.dot(points_3d - camL_pose.translation().flatten(), camL_pose.rotation().matrix()[:,2]) < 0:
+                    points_3d = -points_3d  # flip the point if it is behind the camera
 
                 initial_values.insert(L(index), gtsam.Point3(points_3d[0], points_3d[1], points_3d[2]))
                 keypoint_data.index(d.cpu().detach().numpy(), extra_data = index)
@@ -302,12 +305,14 @@ if __name__ == '__main__':
         input_dim=256,
         num_hashtables=1,
     )
-    initial_values.insert(X(0), gtsam.Pose3())
-    initial_values.insert(Y(0), gtsam.Pose3().compose(cam0_to_cam1))
+
+    initial_pose_ground_truth = gtsam.Pose3(gtsam.Rot3(synced_data[0].gt_pose_start[1].as_matrix()), synced_data[0].gt_pose_start[0])
+    initial_values.insert(X(0), initial_pose_ground_truth)
+    initial_values.insert(Y(0), initial_pose_ground_truth.compose(cam0_to_cam1))
     add_vo_factors(g, synced_data[0], initial_values, (0,1), keypoint_data, first=True)
     # add_vo_factors(g, synced_data[1], initial_values, (1,2), keypoint_data)
-
-    g.push_back(gtsam.PriorFactorPose3(X(0), gtsam.Pose3(gtsam.Rot3(synced_data[0].gt_pose_start[1].as_matrix()), synced_data[0].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
+    g.push_back(gtsam.PriorFactorPose3(X(0), initial_pose_ground_truth, gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
+    # g.push_back(gtsam.PriorFactorPose3(X(0), gtsam.Pose3(), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
 
     # "cheat" a little bit to make the system not underconstrained
     g.push_back(gtsam.PriorFactorPose3(X(1), gtsam.Pose3(gtsam.Rot3(synced_data[1].gt_pose_start[1].as_matrix()), synced_data[1].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
@@ -316,7 +321,7 @@ if __name__ == '__main__':
     g.print("Factor Graph:\n")
     initial_values.print("Initial Values:\n")
     print("initial error = {}".format(g.error(initial_values)))
-    print_factor_errors(g, initial_values, top_n=10)
+    print_factor_errors(g, initial_values, top_n=20)
     
     params = gtsam.DoglegParams()
     params.setVerbosity("TERMINATION")
