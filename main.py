@@ -66,7 +66,7 @@ def create_graph():
     preint_params = init_preint_params()
     preint_bias = init_imu_bias()
     
-    USE_GT_POSE = False # cheating a bit to help debugging
+    USE_GT_POSE = False 
     if USE_GT_POSE:
         add_gt_pose_nodes(graph, synced_data[START_DATA:N_DATA], initial_estimates)
     ground_truth = []

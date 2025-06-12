@@ -337,7 +337,6 @@ if __name__ == '__main__':
     add_vo_factors(g, synced_data[1], initial_values, (1,2), keypoint_data)
     g.push_back(gtsam.PriorFactorPose3(X(0), initial_pose_ground_truth, gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
 
-    # "cheat" a little bit to make the system not underconstrained
     g.push_back(gtsam.PriorFactorPose3(X(1), gtsam.Pose3(gtsam.Rot3(synced_data[1].gt_pose_start[1].as_matrix()), synced_data[1].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose
     # In theory we shouldn't need this prior to make the system not underconstrained
     g.push_back(gtsam.PriorFactorPose3(X(2), gtsam.Pose3(gtsam.Rot3(synced_data[2].gt_pose_start[1].as_matrix()), synced_data[2].gt_pose_start[0]), gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.1, 0.1, 0.1]))))  # prior on first pose

@@ -56,34 +56,27 @@ def add_gt_pose_nodes(
     BetweenFactorPose3 with small noise.  A prior on X(0) is also added
     (if it does not already exist).
     """
-    # noise models ------------------------------------------------------------
     prior_noise   = gtsam.noiseModel.Diagonal.Sigmas(
                         np.array([prior_sigma]*6))     # roll,pitch,yaw,x,y,z
     between_noise = gtsam.noiseModel.Diagonal.Sigmas(
                         np.array([between_sigma]*6))
 
-    # flag to add prior only once
     added_prior = False
 
     for k, datum in enumerate(synced_data):
-        # ---- start pose X(k) -----------------------------------------------
         pose_k = _pose3_from_tuple(datum.gt_pose_start)
 
         if not initial_values.exists(X(k)):
             initial_values.insert(X(k), pose_k)
 
-        # add a prior the very first time we touch X(0)
         if k == 0 and not added_prior:
             graph.add(gtsam.PriorFactorPose3(X(0), pose_k, prior_noise))
             added_prior = True
 
-        # ---- end pose X(k+1) ------------------------------------------------
         pose_k1 = _pose3_from_tuple(datum.gt_pose_end)
         if not initial_values.exists(X(k+1)):
             initial_values.insert(X(k+1), pose_k1)
 
-        # ---- between factor -------------------------------------------------
-        # relative transform T_k→k+1 (world_T_k.inverse() * world_T_k1)
         T_rel = pose_k.between(pose_k1)
         graph.add(gtsam.BetweenFactorPose3(
                     X(k), X(k+1), T_rel, between_noise))
