@@ -2,6 +2,8 @@ from data_reading import read_images, load_reference_poses, read_imu, sync_data
 from visualization import visualize_trajectory
 from visual_odometry import compute_relative_pose, compute_matches, add_vo_factors, cam0_to_cam1, print_factor_errors
 from imu_preintegration import add_imu_factors
+from scipy.spatial.transform import Rotation 
+import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 import gtsam
@@ -24,6 +26,8 @@ synced_data = sync_data(imu, imgs_list, gt_poses)
 
 
 def create_graph():
+    START_DATA = 720
+    N_DATA = 740
     #Noise on prior pose - pretty confident
     PRIOR_NOISE = gtsam.noiseModel.Diagonal.Sigmas(
         np.array([0.05, 0.05, 0.05, 0.01, 0.01, 0.01])
@@ -32,8 +36,8 @@ def create_graph():
     graph = gtsam.NonlinearFactorGraph()
 
     #Converting pose into Pose3 object that GTSAM can use
-    pos = synced_data[0].gt_pose_start[0]
-    rot = synced_data[0].gt_pose_start[1]
+    pos = synced_data[START_DATA].gt_pose_start[0]
+    rot = synced_data[START_DATA].gt_pose_start[1]
     R = rot.as_matrix()
     rot3 = gtsam.Rot3(R)
     point3 = gtsam.Point3(pos[0], pos[1], pos[2])
@@ -61,21 +65,24 @@ def create_graph():
     #Iterate through synced data and call factor functions on each data point
     preint_params = init_preint_params()
     preint_bias = init_imu_bias()
-    N_DATA = 20
+    
     USE_GT_POSE = False # cheating a bit to help debugging
     if USE_GT_POSE:
-        add_gt_pose_nodes(graph, synced_data[:N_DATA], initial_estimates)
-    for data in synced_data[:N_DATA]:
-        try:
-            add_vo_factors(graph, data, initial_estimates, (pose_count,pose_count+1), keypoint_data, insert_initial_pose_values=not USE_GT_POSE)
-            pose_count +=1
-        except cv2.error as e:
-            if "five-point.cpp" in str(e) and "npoints >= 0" in str(e):
-                print(f"Skipping frame pair {pose_count}-{pose_count+1} due to insufficient correspondences.")
-                continue
-            else:
-                raise 
-    add_imu_factors(graph, synced_data[:N_DATA], initial_estimates, preint_params, preint_bias)
+        add_gt_pose_nodes(graph, synced_data[START_DATA:N_DATA], initial_estimates)
+    ground_truth = []
+    for data in synced_data[START_DATA:N_DATA]:
+        #ground_truth.append(data.gt_pose_end)
+        ground_truth.append(data.gt_pose_start)
+        # try:
+        add_vo_factors(graph, data, initial_estimates, (pose_count,pose_count+1), keypoint_data, insert_initial_pose_values=not USE_GT_POSE)
+        pose_count +=1
+        # except cv2.error as e:
+        #     if "five-point.cpp" in str(e) and "npoints >= 0" in str(e):
+        #         print(f"Skipping frame pair {pose_count}-{pose_count+1} due to insufficient correspondences.")
+        #         continue
+        #     else:
+        #         raise 
+    add_imu_factors(graph, synced_data[START_DATA:N_DATA], initial_estimates, preint_params, preint_bias)
     # graph.print("Factor Graph:\n")
     #Run graph through Dogleg Optimizer 
     #print(initial_estimates)
@@ -88,22 +95,32 @@ def create_graph():
     # result.print("Final results:\n")
     print("final error = {}".format(graph.error(result)))
     print_factor_errors(graph, result, top_n=20)
-
-
-
-
+    estimates = []
+    for i in range(pose_count):
+        key = gtsam.symbol('x', i)
+        if result.exists(key):
+            pose = result.atPose3(key)
+            pos = np.array([pose.x(), pose.y(), pose.z()])
+            rot = Rotation.from_matrix(pose.rotation().matrix())
+            estimates.append((pos, rot))
+    avg_pos_error, avg_rot_error = compare_error(estimates, ground_truth)
+    print(avg_pos_error, avg_rot_error)
+    plot_trajectories(ground_truth, estimates)
+    
 
 def compare_error(estimates, real_values):
     min_length = min(len(estimates), len(real_values))
     pos_errors = []
     rot_errors = []
     for ind in range(min_length):
-        real_pos, real_rot = real_values[ind].gt_pose_end
-        e_pos, e_rot = estimates[ind].gt_pose_end
+        real_pos, real_rot = real_values[ind]
+        e_pos, e_rot = estimates[ind]
         pos_diff = real_pos - e_pos
         pos_error = np.linalg.norm(pos_diff)
         euler_real = real_rot.as_euler('XYZ', degrees=True)
         euler_estimate = e_rot.as_euler('XYZ', degrees=True)
+        euler_real = (euler_real + 360) % 360
+        euler_estimate = (euler_estimate + 360) % 360
         rot_error = np.linalg.norm(euler_real - euler_estimate)
         pos_errors.append(pos_error)
         rot_errors.append(rot_error)
@@ -113,6 +130,44 @@ def compare_error(estimates, real_values):
         return avg_pos_error, avg_rot_error
     return None, None
 
+def plot_trajectories(ground_truth, estimates):
+    gt_x = []
+    gt_y = []
+    est_x = []
+    est_y = []
+    for pose in ground_truth:
+        gt_x.append(pose[0][0])
+        gt_y.append(pose[0][1])
+    for pose in estimates:
+        est_x.append(pose[0][0])
+        est_y.append(pose[0][1])
+    
+    plt.figure(figsize=(8,6))
+    plt.plot(gt_x, gt_y, label='Ground Truth', marker='o')
+    plt.plot(est_x, est_y, label='Estimate', marker='x')
+    plt.xlabel('X position')
+    plt.ylabel('Y position')
+    plt.title('Trajectory Comparison')
+    plt.legend()
+    plt.axis('equal')  # To keep aspect ratio consistent
+    plt.grid(True)
+    plt.savefig("trajectory_output.png")
+    plt.figure(figsize=(8,6))
+    plt.plot(gt_x, gt_y, label='Ground Truth', marker='o')
+    plt.xlabel('X position')
+    plt.ylabel('Y position')
+    plt.title('Trajectory Comparison')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("gt_output.png")
+    plt.figure(figsize=(8,6))
+    plt.plot(est_x, est_y, label='Estimate', marker='x')
+    plt.xlabel('X position')
+    plt.ylabel('Y position')
+    plt.title('Trajectory Comparison')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("e_output.png")
 
 
 
